@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; }
+        .upload-area { border: 2px dashed #ccc; padding: 20px; margin: 20px 0; text-align: center; }
+        .result { margin: 20px 0; padding: 10px; background: #f5f5f5; border-radius: 5px; }
+        button { padding: 10px 20px; margin: 10px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        input[type="file"] { margin: 10px 0; }
+        .error { color: red; }
+        .success { color: green; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Supabase Upload Test</h1>
+        
+        <div class="upload-area">
+            <h3>Test Document Upload</h3>
+            <input type="file" id="fileInput" accept=".pdf,.jpg,.jpeg,.png">
+            <br>
+            <button onclick="testUpload()" id="uploadBtn">Test Upload</button>
+            <button onclick="testAuth()" id="authBtn">Test Auth</button>
+            <button onclick="testStorage()" id="storageBtn">Test Storage</button>
+        </div>
+        
+        <div class="result" id="result">
+            Ready to test...
+        </div>
+    </div>
+
+    <script>
+        const supabaseUrl = 'https://djnhdraoijkxsrxgatht.supabase.co'
+        const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRqbmhkcmFvaWpreHNyeGdhdGh0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAxOTc2MjIsImV4cCI6MjA4NTc3MzYyMn0.bO7-luJxCw7hySoGzonF_Q0njPou7F5bzvgeV6W5cIQ'
+        
+        const supabase = window.supabase.createClient(supabaseUrl, supabaseAnonKey)
+        
+        function log(message, type = 'info') {
+            const result = document.getElementById('result')
+            const className = type === 'error' ? 'error' : type === 'success' ? 'success' : ''
+            result.innerHTML += `<div class="${className}">${new Date().toLocaleTimeString()}: ${message}</div>`
+            result.scrollTop = result.scrollHeight
+        }
+        
+        async function testAuth() {
+            log('Testing authentication...')
+            try {
+                const { data: { user }, error } = await supabase.auth.getUser()
+                if (error) throw error
+                
+                if (user) {
+                    log(`✅ User authenticated: ${user.id}`, 'success')
+                    log(`Email: ${user.email}`, 'info')
+                } else {
+                    log('❌ No user authenticated', 'error')
+                    log('You need to sign in first through the main app', 'error')
+                }
+            } catch (error) {
+                log(`❌ Auth error: ${error.message}`, 'error')
+            }
+        }
+        
+        async function testStorage() {
+            log('Testing storage access...')
+            try {
+                const { data: buckets, error } = await supabase.storage.listBuckets()
+                if (error) throw error
+                
+                log(`✅ Found ${buckets.length} buckets: ${buckets.map(b => b.name).join(', ')}`, 'success')
+                
+                const documentsBucket = buckets.find(b => b.name === 'documents')
+                if (documentsBucket) {
+                    log('✅ Documents bucket exists', 'success')
+                } else {
+                    log('❌ Documents bucket not found', 'error')
+                }
+            } catch (error) {
+                log(`❌ Storage error: ${error.message}`, 'error')
+            }
+        }
+        
+        async function testUpload() {
+            const fileInput = document.getElementById('fileInput')
+            const file = fileInput.files[0]
+            
+            if (!file) {
+                log('❌ Please select a file first', 'error')
+                return
+            }
+            
+            log(`Testing upload of: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`)
+            
+            try {
+                // Check if user is authenticated
+                const { data: { user }, error: authError } = await supabase.auth.getUser()
+                if (authError) throw authError
+                
+                if (!user) {
+                    log('❌ User not authenticated. Please sign in through the main app first.', 'error')
+                    return
+                }
+                
+                log(`User ID: ${user.id}`)
+                
+                // Try to upload
+                const fileExt = file.name.split('.').pop().toLowerCase()
+                const timestamp = Date.now()
+                const fileName = `${user.id}/test_${timestamp}.${fileExt}`
+                
+                log(`Uploading to: ${fileName}`)
+                
+                const { data, error } = await supabase.storage
+                    .from('documents')
+                    .upload(fileName, file, { 
+                        upsert: true,
+                        contentType: file.type
+                    })
+                
+                if (error) throw error
+                
+                log(`✅ Upload successful!`, 'success')
+                log(`File path: ${data.path}`, 'success')
+                
+                // Try to get public URL
+                const { data: urlData } = supabase.storage
+                    .from('documents')
+                    .getPublicUrl(fileName)
+                
+                log(`Public URL: ${urlData.publicUrl}`, 'info')
+                
+                // Clean up test file
+                await supabase.storage.from('documents').remove([fileName])
+                log('✅ Test file cleaned up', 'success')
+                
+            } catch (error) {
+                log(`❌ Upload error: ${error.message}`, 'error')
+                console.error('Full error:', error)
+            }
+        }
+        
+        // Auto-run tests on load
+        window.onload = function() {
+            testAuth()
+            testStorage()
+        }
+    </script>
+</body>
+</html>

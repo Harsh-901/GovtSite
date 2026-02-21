@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { Upload, FileText, Check, X, Calendar, MapPin, User, Banknote } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import UploadDebug from './UploadDebug'
 
 const DOCUMENT_TYPES = {
   aadhaar: { name: 'Aadhaar Card', icon: User, required: true },
@@ -93,27 +94,63 @@ export default function DocumentUpload({ user, onComplete }) {
   const handleFileUpload = async (docType, file) => {
     if (!file) return
 
+    // Validate file type
+    const allowedTypes = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png']
+    if (!allowedTypes.includes(file.type)) {
+      alert('Please upload only PDF, JPG, JPEG, or PNG files')
+      return
+    }
+
+    // Validate file size (max 5MB)
+    const maxSize = 5 * 1024 * 1024 // 5MB in bytes
+    if (file.size > maxSize) {
+      alert('File size must be less than 5MB')
+      return
+    }
+
     setUploading(prev => ({ ...prev, [docType]: true }))
 
     try {
-      const fileExt = file.name.split('.').pop()
-      const fileName = `${user.id}/${docType}.${fileExt}`
+      const fileExt = file.name.split('.').pop().toLowerCase()
+      const timestamp = Date.now()
+      const fileName = `${user.id}/${docType}_${timestamp}.${fileExt}`
+      
+      console.log('Uploading file:', fileName, 'Size:', file.size, 'Type:', file.type)
       
       const { data, error } = await supabase.storage
         .from('documents')
-        .upload(fileName, file, { upsert: true })
+        .upload(fileName, file, { 
+          upsert: true,
+          contentType: file.type
+        })
 
-      if (error) throw error
+      if (error) {
+        console.error('Upload error:', error)
+        throw error
+      }
+
+      console.log('Upload successful:', data)
+
+      // Get the public URL for the uploaded file
+      const { data: urlData } = supabase.storage
+        .from('documents')
+        .getPublicUrl(fileName)
 
       setDocuments(prev => ({
         ...prev,
         [docType]: {
           file_path: data.path,
           file_name: file.name,
-          uploaded_at: new Date().toISOString()
+          public_url: urlData.publicUrl,
+          uploaded_at: new Date().toISOString(),
+          file_size: file.size,
+          file_type: file.type
         }
       }))
+
+      alert(`${DOCUMENT_TYPES[docType].name} uploaded successfully!`)
     } catch (error) {
+      console.error('Upload error:', error)
       alert(`Error uploading ${DOCUMENT_TYPES[docType].name}: ${error.message}`)
     } finally {
       setUploading(prev => ({ ...prev, [docType]: false }))
@@ -130,28 +167,55 @@ export default function DocumentUpload({ user, onComplete }) {
       const missingDocs = requiredDocs.filter(doc => !documents[doc])
       
       if (missingDocs.length > 0) {
-        alert(`Please upload the following required documents: ${missingDocs.map(doc => DOCUMENT_TYPES[doc].name).join(', ')}`)
+        alert(`Please upload the following required documents:\n${missingDocs.map(doc => `• ${DOCUMENT_TYPES[doc].name}`).join('\n')}`)
+        setLoading(false)
         return
       }
 
+      // Validate required form fields
+      const requiredFields = [
+        'first_name', 'last_name', 'father_name', 'date_of_birth', 'gender',
+        'address', 'pincode', 'total_land_area', 'primary_crop',
+        'bank_name', 'branch_name', 'account_number', 'ifsc_code'
+      ]
+      
+      const missingFields = requiredFields.filter(field => !formData[field] || formData[field].toString().trim() === '')
+      
+      if (missingFields.length > 0) {
+        alert(`Please fill in all required fields:\n${missingFields.map(field => `• ${field.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}`).join('\n')}`)
+        setLoading(false)
+        return
+      }
+
+      console.log('Submitting farmer profile:', { ...formData, documents })
+
       // Save farmer profile
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('farmer_profiles')
         .upsert({
           user_id: user.id,
           ...formData,
-          full_name: `${formData.first_name} ${formData.last_name}`.trim(), // Combine for full name
+          full_name: `${formData.first_name} ${formData.last_name}`.trim(),
           documents: documents,
           status: 'pending_verification',
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }, {
+          onConflict: 'user_id'
         })
 
-      if (error) throw error
+      if (error) {
+        console.error('Database error:', error)
+        throw error
+      }
 
-      alert('Application submitted successfully! You will receive updates on your registered email and phone.')
+      console.log('Profile saved successfully:', data)
+      
+      alert('🎉 Application submitted successfully!\n\nYour farmer registration has been submitted for verification. You will receive updates on your registered email and phone number.\n\nApplication Status: Pending Verification')
       onComplete()
     } catch (error) {
-      alert(`Error submitting application: ${error.message}`)
+      console.error('Submission error:', error)
+      alert(`❌ Error submitting application:\n\n${error.message}\n\nPlease try again or contact support if the problem persists.`)
     } finally {
       setLoading(false)
     }
@@ -163,6 +227,9 @@ export default function DocumentUpload({ user, onComplete }) {
         <h2 className="text-2xl font-bold text-blue-900 mb-2">Farmer Registration Form</h2>
         <p className="text-gray-600">Please fill all details accurately and upload required documents</p>
       </div>
+
+      {/* Debug Component - Remove in production */}
+      <UploadDebug user={user} />
 
       <form onSubmit={handleSubmit} className="space-y-8">
         {/* Personal Details */}
@@ -622,6 +689,9 @@ export default function DocumentUpload({ user, onComplete }) {
             <Upload className="mr-2 h-5 w-5 text-blue-600" />
             Document Upload
           </h3>
+          <p className="text-sm text-gray-600 mb-4">
+            Please upload clear, readable documents in PDF, JPG, JPEG, or PNG format. Maximum file size: 5MB per document.
+          </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {Object.entries(DOCUMENT_TYPES).map(([key, doc]) => {
               const Icon = doc.icon
@@ -629,10 +699,15 @@ export default function DocumentUpload({ user, onComplete }) {
               const isUploading = uploading[key]
               
               return (
-                <div key={key} className="border border-gray-200 rounded-lg p-4">
+                <div key={key} className={`border rounded-lg p-4 transition-colors ${
+                  isUploaded ? 'border-green-300 bg-green-50' : 
+                  doc.required ? 'border-red-200 bg-red-50' : 'border-gray-200 bg-white'
+                }`}>
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center">
-                      <Icon className="h-4 w-4 text-gray-500 mr-2" />
+                      <Icon className={`h-4 w-4 mr-2 ${
+                        isUploaded ? 'text-green-600' : 'text-gray-500'
+                      }`} />
                       <span className="text-sm font-medium text-gray-700">
                         {doc.name}
                         {doc.required && <span className="text-red-500 ml-1">*</span>}
@@ -645,22 +720,52 @@ export default function DocumentUpload({ user, onComplete }) {
                     type="file"
                     accept=".pdf,.jpg,.jpeg,.png"
                     onChange={(e) => handleFileUpload(key, e.target.files[0])}
-                    className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                    className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 disabled:opacity-50"
                     disabled={isUploading}
                   />
                   
                   {isUploading && (
-                    <div className="mt-2 text-xs text-blue-600">Uploading...</div>
+                    <div className="mt-2 flex items-center text-xs text-blue-600">
+                      <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-blue-600 mr-2"></div>
+                      Uploading...
+                    </div>
                   )}
                   
                   {isUploaded && (
-                    <div className="mt-2 text-xs text-green-600">
-                      Uploaded: {isUploaded.file_name}
+                    <div className="mt-2 space-y-1">
+                      <div className="text-xs text-green-600 font-medium">
+                        ✓ Uploaded: {isUploaded.file_name}
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        Size: {(isUploaded.file_size / 1024).toFixed(1)} KB | 
+                        Type: {isUploaded.file_type}
+                      </div>
+                      {isUploaded.public_url && (
+                        <a 
+                          href={isUploaded.public_url} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="text-xs text-blue-600 hover:text-blue-800 underline"
+                        >
+                          View Document
+                        </a>
+                      )}
                     </div>
                   )}
                 </div>
               )
             })}
+          </div>
+          
+          <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
+            <h4 className="text-sm font-medium text-blue-800 mb-1">Upload Guidelines:</h4>
+            <ul className="text-xs text-blue-700 space-y-1">
+              <li>• Ensure documents are clear and all text is readable</li>
+              <li>• Upload original documents, not photocopies when possible</li>
+              <li>• File formats: PDF (preferred), JPG, JPEG, PNG</li>
+              <li>• Maximum file size: 5MB per document</li>
+              <li>• Required documents must be uploaded before submission</li>
+            </ul>
           </div>
         </section>
 
